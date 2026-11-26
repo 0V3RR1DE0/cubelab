@@ -606,7 +606,7 @@ class AppState(private val context: Context) {
                 val names = patternNames(nn)
                 for (i in names.indices) {
                     val b = patternBoard(nn, i)
-                    if (i > 0 && cubeN.isSolved(b)) continue
+                    if (i > 0 && (cubeN.isSolved(b) || isUniformColourBoard(b, nn))) continue
                     if (!seen.add(b.joinToString(","))) continue
                     val ok = if (nn <= 3) patternPossible(b, nn)
                     else runCatching { BigCube.solve(cubeN, b) != null }.getOrDefault(false)
@@ -919,8 +919,11 @@ class AppState(private val context: Context) {
         playJob?.cancel()
         solving = true
         solveJob = scope.launch {
+            var expectedTarget: IntArray? = null
             val result: SolveOut? = withContext(Dispatchers.Default) {
                 if (!Kociemba.ensure(context)) return@withContext null
+                expectedTarget = wantedTarget?.let { targetInInputScheme(cubeNow, input, it, nn) }
+                if (wantedTarget != null && expectedTarget == null) return@withContext null
                 if (nn >= 4) {
                     val perm = BigCube.inferHomePerm(cubeNow, input) ?: return@withContext null
                     val mappedInput = BigCube.mapToHome(input, perm)
@@ -932,7 +935,7 @@ class AppState(private val context: Context) {
                         val all = toSolvedInput + invSeq(toSolvedTarget)
                         val out = cubeNow.apply(mappedInput, all)
                         if (!out.contentEquals(mappedTarget)) return@withContext null
-                        if (!cubeNow.apply(input, all).contentEquals(wantedTarget)) return@withContext null
+                        if (!cubeNow.apply(input, all).contentEquals(expectedTarget!!)) return@withContext null
                         return@withContext SolveOut(all)
                     }
                     if (nn == 4) {
@@ -950,7 +953,7 @@ class AppState(private val context: Context) {
                 }
                 if (wantedTarget != null) {
                     val moves = solveInto(cubeNow, input, wantedTarget, nn) ?: return@withContext null
-                    if (!cubeNow.apply(input, moves).contentEquals(wantedTarget)) return@withContext null
+                    if (!cubeNow.apply(input, moves).contentEquals(expectedTarget!!)) return@withContext null
                     SolveOut(moves)
                 } else if (nn == 3) {
                     val scheme = schemeFor(cubeNow, input, nn) ?: return@withContext null
@@ -1020,12 +1023,13 @@ class AppState(private val context: Context) {
             val played = withContext(Dispatchers.Default) {
                 cubeNow.apply(input, steps.map { it.label })
             }
-            val reached = if (wantedTarget != null) played.contentEquals(wantedTarget)
+            val expected = expectedTarget
+            val reached = if (expected != null) played.contentEquals(expected)
             else cubeNow.isSolved(played)
             if (!reached) {
                 val raw = result.moves.map { name -> Step(name, cubeNow.move(name).turns, cubeNow.move(name)) }
                 val rawPlayed = withContext(Dispatchers.Default) { cubeNow.apply(input, raw.map { it.label }) }
-                val rawReached = if (wantedTarget != null) rawPlayed.contentEquals(wantedTarget)
+                val rawReached = if (expected != null) rawPlayed.contentEquals(expected)
                 else cubeNow.isSolved(rawPlayed)
                 if (rawReached) {
                     steps = raw
@@ -1263,20 +1267,54 @@ fun solveInto(cube: Cube, input: IntArray, target: IntArray, n: Int): List<Strin
     return moves
 }
 
+/** Recolours [target] into [input]'s colour scheme, or null when either scheme is unknown. */
+fun targetInInputScheme(cube: Cube, input: IntArray, target: IntArray, n: Int): IntArray? {
+    val map = IntArray(6)
+    if (n <= 3) {
+        val inputScheme = schemeFor(cube, input, n) ?: return null
+        val targetScheme = schemeFor(cube, target, n) ?: return null
+        for (c in 0 until 6) {
+            val f = targetScheme.indexOf(c)
+            if (f < 0) return null
+            map[c] = inputScheme[f]
+        }
+    } else {
+        val inputPerm = BigCube.inferHomePerm(cube, input) ?: return null
+        val targetPerm = BigCube.inferHomePerm(cube, target) ?: return null
+        for (c in 0 until 6) {
+            val f = targetPerm.indexOf(c)
+            if (f < 0) return null
+            map[c] = inputPerm[f]
+        }
+    }
+    return IntArray(target.size) { i -> target[i].let { if (it < 0) -1 else map[it] } }
+}
+
+/** True when every face is one colour; such a board is just a recoloured solved cube. */
+internal fun isUniformColourBoard(board: IntArray, n: Int): Boolean {
+    if (board.size != 6 * n * n || board.any { it < 0 }) return false
+    for (f in 0 until 6) {
+        val base = f * n * n
+        for (k in 1 until n * n) if (board[base + k] != board[base]) return false
+    }
+    return true
+}
+
 // ---------------------------------------------------------------- patterns
 
 private data class PatternAlgo(val name: String, val moves: List<String>)
 
 // Classic face-turn algorithms. They are legal on every cube size >= 2, so the
 // generated target is always a real cube; the picker dedupes the solved or
-// duplicate variants per size (e.g. several 2x2 algorithms collapse to solved).
-private val PATTERN_ALGOS = listOf(
+// uniform-face variants per size.
+private val CUBE_IN_CUBE = listOf(
+    "F", "L", "F", "U'", "R", "U", "F2", "L2", "U'", "L'", "B", "D'", "B'", "L2", "U",
+)
+
+private val PATTERN_3 = listOf(
     PatternAlgo("Checkerboard", listOf("R2", "L2", "U2", "D2", "F2", "B2")),
     PatternAlgo("Six spots", listOf("U", "D'", "R", "L'", "F", "B'", "U", "D'")),
-    PatternAlgo(
-        "Cube in a cube",
-        listOf("F", "L", "F", "U2", "R'", "U", "F2", "L2", "U'", "L'", "B", "D'", "B'", "L2", "U"),
-    ),
+    PatternAlgo("Cube in a cube", CUBE_IN_CUBE),
     PatternAlgo(
         "Cube in a cube in a cube",
         listOf("U'", "L'", "U'", "F'", "R2", "B'", "R", "F", "U", "B2", "U", "B'", "L", "U'", "F", "U", "R", "F'"),
@@ -1285,43 +1323,40 @@ private val PATTERN_ALGOS = listOf(
         "Anaconda",
         listOf("L", "U", "B'", "U'", "R", "L'", "B", "R'", "F", "B'", "D", "R", "D'", "F'"),
     ),
-    PatternAlgo(
-        "Cross",
-        listOf("U", "F", "B'", "L", "R'", "U", "D'", "F'", "U'", "D", "L'", "R", "F'", "B", "U"),
-    ),
-    PatternAlgo("Four spots", listOf("F2", "B2", "U", "D2", "L2", "R2", "U", "D2")),
+    PatternAlgo("Cross", listOf("U", "F", "B'", "L2", "U2", "L2", "F'", "B", "U2", "L2", "U")),
+    PatternAlgo("Four spots", listOf("F2", "B2", "U", "D'", "R2", "L2", "U", "D'")),
     PatternAlgo(
         "Superflip",
         listOf("U", "R2", "F", "B", "R", "B2", "R", "U2", "L", "B2", "R", "U'", "D'", "R2", "F", "R'", "L", "B2", "U2", "F2"),
     ),
     PatternAlgo("Tetris", listOf("L", "R", "F", "B", "U'", "D'", "L'", "R'")),
-    PatternAlgo("Vertical stripes", listOf("F", "U", "D'", "L2", "B2", "U2", "F2", "R2", "D2")),
+    PatternAlgo(
+        "Vertical stripes",
+        listOf("F", "U", "F", "R", "L2", "B", "D'", "R", "D2", "L", "D'", "B", "R2", "L", "F", "U", "F"),
+    ),
 )
 
-val PATTERN_NAMES = listOf("Solved") + PATTERN_ALGOS.map { it.name }
-
-// A 2x2 only keeps the corner projection of the 3x3 art, so most of the classic
-// set collapses to a rotation of solved. These are six real 2x2 patterns.
+// A 2x2 keeps only the corner projection of the 3x3 art, so it gets its own set
+// of patterns that actually differ from each other.
 private val PATTERN_2 = listOf(
-    PatternAlgo("Vertical stripes", PATTERN_ALGOS[8].moves),
+    PatternAlgo("Vertical stripes", listOf("L", "R", "F", "B", "U'", "D'", "L'", "R'")),
     PatternAlgo("Horizontal bands", listOf("U")),
     PatternAlgo("Double bands", listOf("U", "D")),
-    PatternAlgo("Diagonal bands", PATTERN_ALGOS[9].moves),
-    PatternAlgo("Two-colour", PATTERN_ALGOS[2].moves),
-    PatternAlgo("Four-colour", PATTERN_ALGOS[3].moves),
+    PatternAlgo("Diagonal bands", listOf("F", "U", "D'", "L2", "B2", "U2", "F2", "R2", "D2")),
+    PatternAlgo("Two-colour", CUBE_IN_CUBE),
 )
 
-fun patternNames(n: Int): List<String> =
-    if (n == 2) listOf("Solved") + PATTERN_2.map { it.name } else PATTERN_NAMES
+private fun patternsFor(n: Int): List<PatternAlgo> = if (n == 2) PATTERN_2 else PATTERN_3
+
+// Kept for callers that iterate the 3x3+ list by index.
+val PATTERN_NAMES = listOf("Solved") + PATTERN_3.map { it.name }
+
+fun patternNames(n: Int): List<String> = listOf("Solved") + patternsFor(n).map { it.name }
 
 fun patternBoard(n: Int, index: Int): IntArray {
     val cube = Cube(n)
     if (index <= 0) return cube.solved()
-    val algo = if (n == 2) {
-        PATTERN_2.getOrNull(index - 1) ?: return cube.solved()
-    } else {
-        PATTERN_ALGOS[(index - 1) % PATTERN_ALGOS.size]
-    }
+    val algo = patternsFor(n).getOrNull(index - 1) ?: return cube.solved()
     return cube.apply(cube.solved(), algo.moves)
 }
 

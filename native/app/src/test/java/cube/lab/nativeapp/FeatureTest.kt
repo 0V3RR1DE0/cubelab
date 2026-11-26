@@ -1,6 +1,7 @@
 package cube.lab.nativeapp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -123,44 +124,81 @@ class FeatureTest {
         assertNull("a face with two colours cannot be a solved Pyraminx", InputFill.completePyraminx(conflict))
     }
 
+    private fun reached(cube: Cube, input: IntArray, moves: List<String>, target: IntArray, n: Int): Boolean {
+        val expected = targetInInputScheme(cube, input, target, n) ?: return false
+        return cube.apply(input, moves).contentEquals(expected)
+    }
+
     @Test
-    fun allPatternsSolve() {
+    fun everyOfferedPatternIsLegalDistinctAndReachable() {
         for (n in 2..7) {
             val cube = Cube(n)
-            var validCount = 0
             val names = patternNames(n)
+            val seen = HashSet<String>()
+            var offered = 0
+            val scramble = randomScramble(cube, 10 + n * 2).first
+            val scramblePerm = if (n >= 4) BigCube.inferHomePerm(cube, scramble) else null
+            val scrambleToSolved = if (n >= 4) {
+                assertNotNull("$n x $n scramble scheme", scramblePerm)
+                BigCube.solve(cube, BigCube.mapToHome(scramble, scramblePerm!!))
+            } else null
+
             for (i in names.indices) {
                 val target = patternBoard(n, i)
-                if (i > 0 && cube.isSolved(target)) continue
-                val valid = if (n <= 3) {
-                    patternPossible(target, n)
-                } else {
-                    runCatching { BigCube.solve(cube, target) != null }.getOrDefault(false)
+                val label = "${names[i]} ${n}x$n"
+                val homeMoves: List<String>? = if (n >= 4) BigCube.solve(cube, target) else null
+                val legal = if (n >= 4) homeMoves != null else patternPossible(target, n)
+                if (n <= 3) assertTrue("$label is not a legal cube state", legal)
+                if (i > 0) {
+                    assertFalse("$label is a uniform recolour of solved", isUniformColourBoard(target, n))
                 }
-                if (!valid) continue
-                validCount++
-                val (input, _) = randomScramble(cube, 10 + n * 2)
-                if (n <= 3) {
-                    val moves = solveInto(cube, input, target, n)
-                    assertNotNull("${names[i]} ${n}x$n target not solvable", moves)
-                    val out = cube.apply(input, moves!!)
-                    assertTrue("${names[i]} ${n}x$n target not reached", out.contentEquals(target))
-                } else {
-                    val inputPerm = BigCube.inferHomePerm(cube, input)
+                if (i > 0 && (cube.isSolved(target) || isUniformColourBoard(target, n))) continue
+                // The picker silently drops a pattern its solver cannot handle.
+                if (!legal) continue
+                assertTrue("$label duplicates an earlier board", seen.add(target.joinToString(",")))
+                offered++
+
+                val solvedInput = cube.solved()
+                val fromSolved = if (n >= 4) invSeq(homeMoves!!) else solveInto(cube, solvedInput, target, n)
+                assertNotNull("$label is not solvable from solved", fromSolved)
+                if (i > 0) assertFalse("$label has no moves from solved", fromSolved!!.isEmpty())
+                assertTrue("$label not reached from solved", reached(cube, solvedInput, fromSolved!!, target, n))
+
+                val fromScramble = if (n >= 4) {
                     val targetPerm = BigCube.inferHomePerm(cube, target)
-                    assertNotNull("${n}x$n input scheme", inputPerm)
-                    assertNotNull("${n}x$n target scheme", targetPerm)
-                    val mappedInput = BigCube.mapToHome(input, inputPerm!!)
-                    val mappedTarget = BigCube.mapToHome(target, targetPerm!!)
-                    val a = BigCube.solve(cube, mappedInput)
-                    val t = BigCube.solve(cube, mappedTarget)
-                    assertNotNull("${n}x$n input not solvable", a)
-                    assertNotNull("${n}x$n target not solvable", t)
-                    val out = cube.apply(mappedInput, a!! + invSeq(t!!))
-                    assertTrue("${names[i]} ${n}x$n target not reached", out.contentEquals(mappedTarget))
-                }
+                    assertNotNull("$label scheme", targetPerm)
+                    val targetToSolved = BigCube.solve(cube, BigCube.mapToHome(target, targetPerm!!))
+                    assertNotNull("$label is not solvable in the home scheme", targetToSolved)
+                    assertNotNull("$n x $n scramble is not solvable", scrambleToSolved)
+                    scrambleToSolved!! + invSeq(targetToSolved!!)
+                } else solveInto(cube, scramble, target, n)
+                assertNotNull("$label is not solvable from a scramble", fromScramble)
+                assertTrue("$label not reached from a scramble", reached(cube, scramble, fromScramble!!, target, n))
             }
-            assertTrue("$n×$n has no valid patterns", validCount > 0)
+            assertTrue("${n}x$n offers no patterns", offered > 0)
+        }
+    }
+
+    @Test
+    fun patternCheckAcceptsRotatedScheme() {
+        val cube = Cube(3)
+        val home = cube.solved()
+        val rotated = recolourToScheme(home, ROTATION_SCHEMES[5])
+        assertFalse("the chosen rotation must not be the home scheme", rotated.contentEquals(home))
+        for (i in patternNames(3).indices) {
+            val target = patternBoard(3, i)
+            val label = "${PATTERN_NAMES[i]} 3x3"
+            if (i > 0 && (cube.isSolved(target) || isUniformColourBoard(target, 3))) continue
+            val moves = solveInto(cube, rotated, target, 3)
+            assertNotNull("$label is not solvable from a rotated scheme", moves)
+            val expected = targetInInputScheme(cube, rotated, target, 3)
+            assertNotNull("$label rotated-scheme target mapping", expected)
+            val raw = cube.apply(rotated, moves!!)
+            assertFalse(
+                "$label: the old raw comparison must fail here to cover the reported bug",
+                raw.contentEquals(target),
+            )
+            assertTrue("$label not reached under a rotated scheme", raw.contentEquals(expected!!))
         }
     }
 }
