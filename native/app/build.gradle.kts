@@ -36,8 +36,8 @@ android {
         applicationId = "cube.lab.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 7
-        versionName = "2.3"
+        versionCode = 8
+        versionName = "2.4"
     }
 
     signingConfigs {
