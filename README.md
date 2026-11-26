@@ -84,8 +84,8 @@ otherwise release builds are unsigned. For local builds, put the properties in
   - `CUBELAB_KEY_PASSWORD`
 
 ```sh
-git tag v2.2.0
-git push origin v2.2.0
+git tag v2.3.0
+git push origin v2.3.0
 ```
 
 ## Project layout
