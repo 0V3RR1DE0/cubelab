@@ -211,7 +211,13 @@ object Kociemba {
     // ------------------------------------------------------------ searching
 
     private var nodes = 0L
-    private val nodeLimit = 40_000_000L
+
+    // Phase 1 and phase 2 only return null when this budget runs out: any legal
+    // 3x3 state is within 14 phase-1 and 18 phase-2 moves, so the search always
+    // succeeds if it is allowed to finish. 40M cut off legal states whose only
+    // solutions are deep in phase 2 (the reduced big-cube "pure corner swap" is
+    // 16 phase-2 moves and needs ~80M nodes), so keep enough headroom for those.
+    private val nodeLimit = 150_000_000L
 
     private fun allowed(lastFace: Int, face: Int): Boolean {
         if (lastFace < 0) return true
